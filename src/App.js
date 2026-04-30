@@ -71,56 +71,78 @@ const hasConflict = (a, b, driveMins) => {
 }
 
 // Smart route:
-// 1. Group homes into 90-min time windows based on open house START time
-// 2. Within each time window, sort by nearest-neighbor geography
-// 3. Chain windows chronologically so you never visit a 10am house at 2pm
+// Priority: time-aware nearest-neighbor
+// At each step, find the closest house that:
+//   a) we can still make (its open house hasn't closed by the time we'd arrive)
+//   b) isn't so far in the future that we'd be standing around waiting
+// This naturally groups nearby houses with overlapping windows together
+// without rigidly separating them into buckets
 const smartRoute = (homes) => {
   if (!homes.length) return { routed: [], conflicts: [] }
 
-  // Bucket homes into time windows (every 90 mins)
-  const WINDOW = 90
-  const buckets = {}
-  homes.forEach(h => {
-    const start = parseOH(h.oh)?.start ?? 0
-    const bucket = Math.floor(start / WINDOW) * WINDOW
-    if (!buckets[bucket]) buckets[bucket] = []
-    buckets[bucket].push(h)
+  const VISIT_MINS = 30 // avg time spent at each house
+  const MAX_WAIT = 45  // don't sequence a house that starts more than 45min from when we'd arrive
+
+  // Start at the earliest opening house
+  const sorted = [...homes].sort((a, b) => {
+    const ta = parseOH(a.oh)?.start ?? Infinity
+    const tb = parseOH(b.oh)?.start ?? Infinity
+    return ta - tb
   })
 
-  // For each bucket, sort homes by nearest-neighbor geography
-  const sortedBuckets = Object.keys(buckets)
-    .map(Number)
-    .sort((a, b) => a - b)
-    .map(key => {
-      const group = buckets[key]
-      if (group.length <= 1) return group
-      // Nearest-neighbor within this time window
-      const result = [group[0]]
-      const rem = group.slice(1)
-      while (rem.length) {
-        const last = result[result.length - 1]
-        let bi = 0, bd = Infinity
-        rem.forEach((h, i) => {
-          const d = distMiles(last, h)
-          if (d < bd) { bd = d; bi = i }
-        })
-        result.push(rem.splice(bi, 1)[0])
-      }
-      return result
+  const result = [sorted[0]]
+  const remaining = sorted.slice(1)
+
+  // Track simulated clock time
+  let currentTime = parseOH(sorted[0].oh)?.start ?? 600 // default 10am
+
+  while (remaining.length) {
+    const last = result[result.length - 1]
+    currentTime += VISIT_MINS // time after visiting current house
+
+    let bestIdx = -1
+    let bestScore = Infinity
+
+    remaining.forEach((h, i) => {
+      const drive = estDrive(last, h)
+      const arrivalTime = currentTime + drive
+      const ohp = parseOH(h.oh)
+      if (!ohp) return
+
+      // Skip if we'd arrive after it closes
+      if (arrivalTime > ohp.end) return
+
+      // Score = geographic distance + penalty for waiting too long
+      const wait = Math.max(0, ohp.start - arrivalTime)
+      if (wait > MAX_WAIT) return // skip if we'd be waiting around too long
+
+      const score = distMiles(last, h) + wait * 0.05
+      if (score < bestScore) { bestScore = score; bestIdx = i }
     })
 
-  const routed = sortedBuckets.flat()
-
-  // Find conflicts
-  const conflicts = []
-  for (let i = 0; i < routed.length - 1; i++) {
-    const drive = estDrive(routed[i], routed[i + 1])
-    if (hasConflict(routed[i], routed[i + 1], drive)) {
-      conflicts.push({ a: routed[i].addr, b: routed[i + 1].addr, drive })
+    if (bestIdx === -1) {
+      // Nothing reachable right now — jump to the next available house by time
+      remaining.sort((a, b) => (parseOH(a.oh)?.start ?? Infinity) - (parseOH(b.oh)?.start ?? Infinity))
+      result.push(remaining.shift())
+      currentTime = parseOH(result[result.length - 1].oh)?.start ?? currentTime
+    } else {
+      const next = remaining.splice(bestIdx, 1)[0]
+      const drive = estDrive(last, next)
+      currentTime += drive
+      result.push(next)
     }
   }
 
-  return { routed, conflicts }
+  // Find conflicts
+  const conflicts = []
+  for (let i = 0; i < result.length - 1; i++) {
+    const drive = estDrive(result[i], result[i + 1])
+    if (hasConflict(result[i], result[i + 1], drive)) {
+      conflicts.push({ a: result[i].addr, b: result[i + 1].addr, drive })
+    }
+  }
+
+  return { routed: result, conflicts }
 }
 
 // Full-day Google Maps URL with all stops
@@ -405,6 +427,87 @@ export default function App() {
   const weekend = getWeekend()
 
   // Mini SVG map for a plan
+  // Live Google Maps embed showing all stops + user location
+  const LiveMap = ({ planHomes }) => {
+    const [userPos, setUserPos] = useState(null)
+    const [mapError, setMapError] = useState(false)
+
+    useEffect(() => {
+      if (navigator.geolocation) {
+        navigator.geolocation.getCurrentPosition(
+          pos => setUserPos({ lat: pos.coords.latitude, lng: pos.coords.longitude }),
+          () => setMapError(true),
+          { timeout: 5000 }
+        )
+      } else {
+        setMapError(true)
+      }
+    }, [])
+
+    const mh = planHomes.filter(h => h.lat && h.lng)
+    if (!mh.length) return null
+
+    // Build Google Maps embed URL with markers for each stop
+    // Center on midpoint of all stops (or user location if available)
+    const centerLat = userPos ? userPos.lat : mh.reduce((s, h) => s + h.lat, 0) / mh.length
+    const centerLng = userPos ? userPos.lng : mh.reduce((s, h) => s + h.lng, 0) / mh.length
+
+    // Build markers query: each stop as a colored pin
+    const markerParams = mh.map((h, i) =>
+      `markers=color:green%7Clabel:${i+1}%7C${h.lat},${h.lng}`
+    ).join('&')
+
+    const userMarker = userPos
+      ? `&markers=color:blue%7Clabel:U%7C${userPos.lat},${userPos.lng}`
+      : ''
+
+    const mapUrl = `https://maps.googleapis.com/maps/api/staticmap?center=${centerLat},${centerLng}&zoom=12&size=680x320&scale=2&${markerParams}${userMarker}&key=AIzaSyD-9tSrke72PouQMnMX-a7eZSW0jkFMBWY`
+
+    // Fallback: interactive iframe embed (no API key needed)
+    const query = mh.map(h => `${h.lat},${h.lng}`).join('%7C')
+    const iframeUrl = `https://www.google.com/maps/embed/v1/directions?key=AIzaSyD-9tSrke72PouQMnMX-a7eZSW0jkFMBWY&origin=${mh[0].lat},${mh[0].lng}&destination=${mh[mh.length-1].lat},${mh[mh.length-1].lng}&waypoints=${mh.slice(1,-1).map(h=>`${h.lat},${h.lng}`).join('%7C')}&mode=driving`
+
+    return (
+      <div className="live-map-wrap">
+        <div className="live-map-header">
+          <span className="live-map-title">Route Map</span>
+          {userPos
+            ? <span className="live-map-loc">Using your location</span>
+            : <span className="live-map-loc muted">{mapError ? 'Location unavailable' : 'Getting location...'}</span>
+          }
+        </div>
+        <div className="live-map-frame">
+          <iframe
+            title="Open house route map"
+            width="100%"
+            height="340"
+            style={{border:0, borderRadius:'0 0 12px 12px', display:'block'}}
+            loading="lazy"
+            allowFullScreen
+            referrerPolicy="no-referrer-when-downgrade"
+            src={iframeUrl}
+          />
+        </div>
+        {/* Stop legend */}
+        <div className="map-legend">
+          {mh.map((h, i) => {
+            const ohp = parseOH(h.oh)
+            return (
+              <div key={h.id} className="legend-item">
+                <div className="legend-num">{i+1}</div>
+                <div className="legend-info">
+                  <div className="legend-addr">{h.addr.split(',')[0]}</div>
+                  {ohp && <div className="legend-time">{fmtMin(ohp.start)}–{fmtMin(ohp.end)}</div>}
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      </div>
+    )
+  }
+
+  // Simple SVG fallback map
   const PlanMap = ({ planHomes }) => {
     const mh = planHomes.filter(h => h.lat && h.lng)
     if (mh.length < 2) return null
@@ -657,7 +760,7 @@ export default function App() {
                 })}
               </div>
 
-              <PlanMap planHomes={plan.homes}/>
+              <LiveMap planHomes={plan.homes}/>
             </div>
           ))}
         </div>
