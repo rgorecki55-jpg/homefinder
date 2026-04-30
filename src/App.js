@@ -70,56 +70,46 @@ const hasConflict = (a, b, driveMins) => {
   return arriveAtB > pb.end
 }
 
-// Smart route: cluster by geography first, then sequence by time within clusters,
-// then chain clusters using nearest-neighbor so you never backtrack
+// Smart route:
+// 1. Group homes into 90-min time windows based on open house START time
+// 2. Within each time window, sort by nearest-neighbor geography
+// 3. Chain windows chronologically so you never visit a 10am house at 2pm
 const smartRoute = (homes) => {
   if (!homes.length) return { routed: [], conflicts: [] }
 
-  // Build geographic clusters (~3.5 mile radius)
-  const clusters = []
-  const assigned = new Set()
-  homes.forEach((h, i) => {
-    if (assigned.has(i)) return
-    const cluster = [h]
-    assigned.add(i)
-    homes.forEach((h2, j) => {
-      if (assigned.has(j)) return
-      if (distMiles(h, h2) <= 3.5) { cluster.push(h2); assigned.add(j) }
+  // Bucket homes into time windows (every 90 mins)
+  const WINDOW = 90
+  const buckets = {}
+  homes.forEach(h => {
+    const start = parseOH(h.oh)?.start ?? 0
+    const bucket = Math.floor(start / WINDOW) * WINDOW
+    if (!buckets[bucket]) buckets[bucket] = []
+    buckets[bucket].push(h)
+  })
+
+  // For each bucket, sort homes by nearest-neighbor geography
+  const sortedBuckets = Object.keys(buckets)
+    .map(Number)
+    .sort((a, b) => a - b)
+    .map(key => {
+      const group = buckets[key]
+      if (group.length <= 1) return group
+      // Nearest-neighbor within this time window
+      const result = [group[0]]
+      const rem = group.slice(1)
+      while (rem.length) {
+        const last = result[result.length - 1]
+        let bi = 0, bd = Infinity
+        rem.forEach((h, i) => {
+          const d = distMiles(last, h)
+          if (d < bd) { bd = d; bi = i }
+        })
+        result.push(rem.splice(bi, 1)[0])
+      }
+      return result
     })
-    clusters.push(cluster)
-  })
 
-  // Sort within each cluster by open house start time
-  clusters.forEach(c => c.sort((a, b) => {
-    const ta = parseOH(a.oh)?.start ?? Infinity
-    const tb = parseOH(b.oh)?.start ?? Infinity
-    return ta - tb
-  }))
-
-  // Sort clusters by their earliest start time
-  clusters.sort((a, b) => {
-    const ta = parseOH(a[0].oh)?.start ?? Infinity
-    const tb = parseOH(b[0].oh)?.start ?? Infinity
-    return ta - tb
-  })
-
-  // Nearest-neighbor across cluster centroids to minimize driving between zones
-  const centroid = c => ({
-    lat: c.reduce((s, h) => s + (h.lat || 35.2), 0) / c.length,
-    lng: c.reduce((s, h) => s + (h.lng || -80.8), 0) / c.length,
-  })
-
-  const ordered = [clusters[0]]
-  const rem = clusters.slice(1)
-  while (rem.length) {
-    const last = ordered[ordered.length - 1]
-    const lc = centroid(last)
-    let bi = 0, bd = Infinity
-    rem.forEach((c, i) => { const d = distMiles(lc, centroid(c)); if (d < bd) { bd = d; bi = i } })
-    ordered.push(rem.splice(bi, 1)[0])
-  }
-
-  const routed = ordered.flat()
+  const routed = sortedBuckets.flat()
 
   // Find conflicts
   const conflicts = []
