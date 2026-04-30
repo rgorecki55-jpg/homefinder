@@ -788,6 +788,19 @@ export default function App() {
                         <a href={navUrl} target="_blank" rel="noreferrer" className="nav-btn">
                           Navigate
                         </a>
+                        <button
+                          className="skip-btn"
+                          title="Skip this stop"
+                          onClick={() => setPlans(p => ({
+                            ...p,
+                            [plan.label]: {
+                              ...p[plan.label],
+                              homes: p[plan.label].homes.filter(x => x.id !== h.id)
+                            }
+                          }))}
+                        >
+                          Skip
+                        </button>
                       </div>
                     </div>
                   )
