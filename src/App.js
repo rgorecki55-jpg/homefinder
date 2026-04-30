@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { supabase } from './supabase'
 import { SEED_HOMES } from './seed'
 import './App.css'
-
+ 
 // ── helpers ──────────────────────────────────────────────────────────────────
 const fmtP = p => '$' + Number(p).toLocaleString()
 const avg = h => {
@@ -21,7 +21,7 @@ const statCol = s =>
   : s === 'Coming Soon' ? 'var(--gold)'
   : s === 'Pending' || s === 'Active Under Contract' ? 'var(--red)'
   : 'var(--t3)'
-
+ 
 const parseOHMin = oh => {
   if (!oh) return Infinity
   const m = oh.match(/(\d+):(\d+)(am|pm)/i)
@@ -31,14 +31,14 @@ const parseOHMin = oh => {
   if (m[3].toLowerCase() === 'am' && h === 12) h = 0
   return h * 60 + mn
 }
-
+ 
 const hdist = (a, b) => {
   if (!a.lat || !b.lat) return 999
   const R = 6371, dLat = (b.lat - a.lat) * Math.PI / 180, dLng = (b.lng - a.lng) * Math.PI / 180
   const x = Math.sin(dLat/2)**2 + Math.cos(a.lat*Math.PI/180)*Math.cos(b.lat*Math.PI/180)*Math.sin(dLng/2)**2
   return R * 2 * Math.atan2(Math.sqrt(x), Math.sqrt(1-x))
 }
-
+ 
 const routeOpt = list => {
   if (!list.length) return []
   const s = [...list].sort((a,b) => parseOHMin(a.oh) - parseOHMin(b.oh))
@@ -51,9 +51,9 @@ const routeOpt = list => {
   }
   return res
 }
-
+ 
 const uid = () => 'h' + Date.now() + Math.random().toString(36).slice(2,5)
-
+ 
 const callAI = async (system, user, max = 900) => {
   const res = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
@@ -68,7 +68,7 @@ const callAI = async (system, user, max = 900) => {
   const d = await res.json()
   return d.content?.[0]?.text || ''
 }
-
+ 
 // ── App ───────────────────────────────────────────────────────────────────────
 export default function App() {
   const [homes, setHomes]         = useState([])
@@ -88,7 +88,7 @@ export default function App() {
   const [plan, setPlan]           = useState(null)
   const [planning, setPlanning]   = useState(false)
   const [syncing, setSyncing]     = useState(false)
-
+ 
   // ── load from Supabase ──
   useEffect(() => {
     const load = async () => {
@@ -96,11 +96,12 @@ export default function App() {
         .from('homes')
         .select('*')
         .order('created_at', { ascending: true })
-
+ 
       if (error || !data?.length) {
-        // Seed on first load
-        const { error: insErr } = await supabase.from('homes').insert(
-          SEED_HOMES.map(h => ({ ...h, created_at: new Date().toISOString() }))
+        // Seed on first load only — upsert prevents duplicates
+        const { error: insErr } = await supabase.from('homes').upsert(
+          SEED_HOMES.map(h => ({ ...h, created_at: new Date().toISOString() })),
+          { onConflict: 'id', ignoreDuplicates: true }
         )
         if (!insErr) setHomes(SEED_HOMES)
       } else {
@@ -110,7 +111,7 @@ export default function App() {
     }
     load()
   }, [])
-
+ 
   // ── real-time subscription ──
   useEffect(() => {
     const channel = supabase
@@ -127,9 +128,9 @@ export default function App() {
       .subscribe()
     return () => supabase.removeChannel(channel)
   }, [])
-
+ 
   const toast_ = msg => { setToast(msg); setTimeout(() => setToast(''), 2500) }
-
+ 
   // ── save a home update ──
   const saveHome = async updated => {
     setSyncing(true)
@@ -138,7 +139,7 @@ export default function App() {
     else setHomes(p => p.map(h => h.id === updated.id ? updated : h))
     setSyncing(false)
   }
-
+ 
   // ── add home ──
   const addHome = async newHome => {
     setSyncing(true)
@@ -147,7 +148,7 @@ export default function App() {
     else { setHomes(p => [newHome, ...p]); toast_('Home added') }
     setSyncing(false)
   }
-
+ 
   // ── delete home ──
   const deleteHome = async id => {
     if (!window.confirm('Remove this home?')) return
@@ -158,7 +159,7 @@ export default function App() {
     setSyncing(false)
     toast_('Removed')
   }
-
+ 
   // ── URL auto-fill ──
   const fetchUrl = async () => {
     if (!addUrl.trim()) return
@@ -176,7 +177,7 @@ export default function App() {
     }
     setFetching(false)
   }
-
+ 
   // ── open house scheduler ──
   const buildPlan = async () => {
     if (!schedDate) return
@@ -208,7 +209,7 @@ export default function App() {
     }
     setPlanning(false)
   }
-
+ 
   // ── filtered + sorted list ──
   const displayed = (() => {
     let l = [...homes]
@@ -226,7 +227,7 @@ export default function App() {
     })
     return l
   })()
-
+ 
   const detailH = homes.find(h => h.id === detailId)
   const openDetail = id => {
     const h = homes.find(x => x.id === id)
@@ -234,14 +235,14 @@ export default function App() {
     setDetail({ rob:h.rob||'', kelly:h.kelly||'', pros:h.pros||'', cons:h.cons||'', notes:h.notes||'', visited:h.visited||'', compass:h.compass||'', redfin:h.redfin||'' })
     setDetailId(id)
   }
-
+ 
   const saveDetail = async () => {
     const h = homes.find(x => x.id === detailId)
     await saveHome({ ...h, ...detail, rob: detail.rob||null, kelly: detail.kelly||null })
     setDetailId(null)
     toast_('Saved')
   }
-
+ 
   const saveAdd = async () => {
     const f = addForm
     if (!f.addr || !f.price) { toast_('Address and price required'); return }
@@ -259,13 +260,13 @@ export default function App() {
     })
     setAddOpen(false); setAddUrl(''); setAddForm({})
   }
-
+ 
   // ── stats ──
   const visitedCount = homes.filter(h => h.visited).length
   const ohCount = homes.filter(h => h.oh).length
   const avgs = homes.filter(h => avg(h)).map(h => +avg(h))
   const topAvg = avgs.length ? (avgs.reduce((a,b) => a+b,0)/avgs.length).toFixed(1) : '—'
-
+ 
   // ── OH groups ──
   const ohGroups = (() => {
     const d = {}
@@ -277,10 +278,10 @@ export default function App() {
     Object.keys(d).forEach(k => d[k].sort((a,b) => parseOHMin(a.oh) - parseOHMin(b.oh)))
     return d
   })()
-
+ 
   // ── compare ──
   const cmpH = cmpIds.map(id => homes.find(h => h.id === id)).filter(Boolean)
-
+ 
   // ── SVG map ──
   const mapH = (plan?.homes || []).filter(h => h.lat)
   const lats = mapH.map(h => h.lat), lngs = mapH.map(h => h.lng)
@@ -290,10 +291,10 @@ export default function App() {
     ((lng-mnLng)/(mxLng-mnLng||.01))*620 + 30,
     (1-(lat-mnLat)/(mxLat-mnLat||.01))*200 + 20
   ]
-
+ 
   const dRob = detail.rob, dKelly = detail.kelly
   const dAvg = dRob && dKelly ? ((+dRob + +dKelly)/2).toFixed(1) : dRob ? (+dRob).toFixed(1) : dKelly ? (+dKelly).toFixed(1) : null
-
+ 
   if (!loaded) return (
     <div className="loading">
       <div className="loading-inner">
@@ -302,7 +303,7 @@ export default function App() {
       </div>
     </div>
   )
-
+ 
   return (
     <div className="app">
       {/* NAV */}
@@ -318,7 +319,7 @@ export default function App() {
           <button className="add-btn" onClick={() => setAddOpen(true)}>+ Add</button>
         </div>
       </nav>
-
+ 
       {/* ── HOMES ── */}
       {tab === 'homes' && (
         <div className="page">
@@ -386,7 +387,7 @@ export default function App() {
           )}
         </div>
       )}
-
+ 
       {/* ── OPEN HOUSES ── */}
       {tab === 'openhouses' && (
         <div className="page">
@@ -423,7 +424,7 @@ export default function App() {
           )}
         </div>
       )}
-
+ 
       {/* ── SCHEDULER ── */}
       {tab === 'scheduler' && (
         <div className="page">
@@ -437,7 +438,7 @@ export default function App() {
             </button>
             {plan && <button className="btn-c" onClick={() => setPlan(null)} style={{marginLeft:'auto'}}>Clear</button>}
           </div>
-
+ 
           {plan && (
             <>
               <div className="plan-box">
@@ -483,7 +484,7 @@ export default function App() {
           )}
         </div>
       )}
-
+ 
       {/* ── COMPARE ── */}
       {tab === 'compare' && (
         <div className="page">
@@ -544,7 +545,7 @@ export default function App() {
           )}
         </div>
       )}
-
+ 
       {/* ── DETAIL MODAL ── */}
       {detailId && detailH && (
         <div className="ov" onClick={e => e.target === e.currentTarget && setDetailId(null)}>
@@ -610,7 +611,7 @@ export default function App() {
           </div>
         </div>
       )}
-
+ 
       {/* ── ADD MODAL ── */}
       {addOpen && (
         <div className="ov" onClick={e => e.target === e.currentTarget && (setAddOpen(false), setAddUrl(''), setAddForm({}))}>
@@ -663,8 +664,9 @@ export default function App() {
           </div>
         </div>
       )}
-
+ 
       <div className={`toast${toast ? ' show' : ''}`}>{toast}</div>
     </div>
   )
 }
+ 
