@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { supabase } from './supabase'
 import { SEED_HOMES } from './seed'
 import './App.css'
@@ -427,68 +427,102 @@ export default function App() {
   const weekend = getWeekend()
 
   // Mini SVG map for a plan
-  // Live Google Maps embed showing all stops + user location
+  // Live map using OpenStreetMap + Leaflet (no API key needed, completely free)
   const LiveMap = ({ planHomes }) => {
+    const mapRef = useRef(null)
+    const leafletRef = useRef(null)
     const [userPos, setUserPos] = useState(null)
-    const [mapError, setMapError] = useState(false)
+    const [mapReady, setMapReady] = useState(false)
+    const mh = planHomes.filter(h => h.lat && h.lng)
 
+    // Load Leaflet CSS + JS dynamically
+    useEffect(() => {
+      if (document.getElementById('leaflet-css')) { setMapReady(true); return }
+      const link = document.createElement('link')
+      link.id = 'leaflet-css'
+      link.rel = 'stylesheet'
+      link.href = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css'
+      document.head.appendChild(link)
+      const script = document.createElement('script')
+      script.src = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js'
+      script.onload = () => setMapReady(true)
+      document.head.appendChild(script)
+    }, [])
+
+    // Get user location
     useEffect(() => {
       if (navigator.geolocation) {
         navigator.geolocation.getCurrentPosition(
           pos => setUserPos({ lat: pos.coords.latitude, lng: pos.coords.longitude }),
-          () => setMapError(true),
-          { timeout: 5000 }
+          () => {},
+          { timeout: 6000 }
         )
-      } else {
-        setMapError(true)
       }
     }, [])
 
-    const mh = planHomes.filter(h => h.lat && h.lng)
+    // Init map once Leaflet is ready
+    useEffect(() => {
+      if (!mapReady || !mapRef.current || !mh.length || !window.L) return
+      if (leafletRef.current) { leafletRef.current.remove(); leafletRef.current = null }
+
+      const L = window.L
+      const centerLat = mh.reduce((s, h) => s + h.lat, 0) / mh.length
+      const centerLng = mh.reduce((s, h) => s + h.lng, 0) / mh.length
+
+      const map = L.map(mapRef.current, { zoomControl: true, scrollWheelZoom: false })
+      leafletRef.current = map
+
+      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        attribution: '© OpenStreetMap contributors',
+        maxZoom: 18,
+      }).addTo(map)
+
+      // Draw route line
+      const coords = mh.map(h => [h.lat, h.lng])
+      L.polyline(coords, { color: '#2C5F2E', weight: 3, dashArray: '6 4', opacity: 0.7 }).addTo(map)
+
+      // Add numbered markers for each stop
+      mh.forEach((h, i) => {
+        const icon = L.divIcon({
+          className: '',
+          html: `<div style="background:#2C5F2E;color:#fff;width:26px;height:26px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,0.3)">${i+1}</div>`,
+          iconSize: [26, 26],
+          iconAnchor: [13, 13],
+        })
+        const ohp = parseOH(h.oh)
+        const popup = `<div style="font-family:sans-serif;min-width:160px"><strong style="font-size:13px">${h.addr.split(',')[0]}</strong><br/><span style="color:#6A655D;font-size:11px">${h.hood}</span><br/><span style="color:#B8841A;font-size:11px;font-weight:600">${ohp ? fmtMin(ohp.start)+' – '+fmtMin(ohp.end) : h.oh}</span><br/><span style="color:#2C5F2E;font-size:11px">${fmtP(h.price)} · ${h.beds}bd/${h.baths}ba</span></div>`
+        L.marker([h.lat, h.lng], { icon }).addTo(map).bindPopup(popup)
+      })
+
+      // Add user location marker if available
+      if (userPos) {
+        const youIcon = L.divIcon({
+          className: '',
+          html: `<div style="background:#1A4472;color:#fff;width:22px;height:22px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:700;border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,0.4)">YOU</div>`,
+          iconSize: [22, 22],
+          iconAnchor: [11, 11],
+        })
+        L.marker([userPos.lat, userPos.lng], { icon: youIcon }).addTo(map).bindPopup('Your location')
+      }
+
+      // Fit map to show all markers
+      const allPoints = userPos
+        ? [...coords, [userPos.lat, userPos.lng]]
+        : coords
+      map.fitBounds(L.latLngBounds(allPoints), { padding: [30, 30] })
+
+      return () => { if (leafletRef.current) { leafletRef.current.remove(); leafletRef.current = null } }
+    }, [mapReady, userPos, planHomes])
+
     if (!mh.length) return null
-
-    // Build Google Maps embed URL with markers for each stop
-    // Center on midpoint of all stops (or user location if available)
-    const centerLat = userPos ? userPos.lat : mh.reduce((s, h) => s + h.lat, 0) / mh.length
-    const centerLng = userPos ? userPos.lng : mh.reduce((s, h) => s + h.lng, 0) / mh.length
-
-    // Build markers query: each stop as a colored pin
-    const markerParams = mh.map((h, i) =>
-      `markers=color:green%7Clabel:${i+1}%7C${h.lat},${h.lng}`
-    ).join('&')
-
-    const userMarker = userPos
-      ? `&markers=color:blue%7Clabel:U%7C${userPos.lat},${userPos.lng}`
-      : ''
-
-    const mapUrl = `https://maps.googleapis.com/maps/api/staticmap?center=${centerLat},${centerLng}&zoom=12&size=680x320&scale=2&${markerParams}${userMarker}&key=AIzaSyD-9tSrke72PouQMnMX-a7eZSW0jkFMBWY`
-
-    // Fallback: interactive iframe embed (no API key needed)
-    const query = mh.map(h => `${h.lat},${h.lng}`).join('%7C')
-    const iframeUrl = `https://www.google.com/maps/embed/v1/directions?key=AIzaSyD-9tSrke72PouQMnMX-a7eZSW0jkFMBWY&origin=${mh[0].lat},${mh[0].lng}&destination=${mh[mh.length-1].lat},${mh[mh.length-1].lng}&waypoints=${mh.slice(1,-1).map(h=>`${h.lat},${h.lng}`).join('%7C')}&mode=driving`
 
     return (
       <div className="live-map-wrap">
         <div className="live-map-header">
           <span className="live-map-title">Route Map</span>
-          {userPos
-            ? <span className="live-map-loc">Using your location</span>
-            : <span className="live-map-loc muted">{mapError ? 'Location unavailable' : 'Getting location...'}</span>
-          }
+          <span className="live-map-loc">{userPos ? 'Showing your location' : 'Tap markers for details'}</span>
         </div>
-        <div className="live-map-frame">
-          <iframe
-            title="Open house route map"
-            width="100%"
-            height="340"
-            style={{border:0, borderRadius:'0 0 12px 12px', display:'block'}}
-            loading="lazy"
-            allowFullScreen
-            referrerPolicy="no-referrer-when-downgrade"
-            src={iframeUrl}
-          />
-        </div>
-        {/* Stop legend */}
+        <div ref={mapRef} style={{height:340, width:'100%', background:'#EEE9E2'}}/>
         <div className="map-legend">
           {mh.map((h, i) => {
             const ohp = parseOH(h.oh)
