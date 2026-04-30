@@ -165,7 +165,12 @@ const getWeekend = () => {
 
 const getOHForDay = (homes, dayStr) => {
   const [mon, day] = dayStr.split(' ')
-  return homes.filter(h => h.oh && h.oh.includes(mon) && h.oh.includes(day))
+  // Exact day match: "May 3" must not match "May 30" or "May 13"
+  return homes.filter(h => {
+    if (!h.oh) return false
+    const match = h.oh.match(/([A-Za-z]+)\s+(\d+)/)
+    return match && match[1] === mon && match[2] === day
+  })
 }
 
 const callAI = async (system, user, max = 900) => {
@@ -280,6 +285,12 @@ export default function App() {
 
   // ── build plan for one day ──
   const buildPlanForDay = async (dayLabel, ohH) => {
+    // Double-check: strip any homes that don't actually belong to this day
+    const [mon, day] = dayLabel.split(' ')
+    ohH = ohH.filter(h => {
+      const m = h.oh && h.oh.match(/([A-Za-z]+)\s+(\d+)/)
+      return m && m[1] === mon && m[2] === day
+    })
     if (!ohH.length) return
     const { routed, conflicts } = smartRoute(ohH)
     const mapsUrl = buildMapsUrl(routed)
@@ -388,8 +399,16 @@ export default function App() {
       if (!d[k]) d[k] = []
       d[k].push(h)
     })
+    // Sort homes within each day by start time
     Object.keys(d).forEach(k => d[k].sort((a,b) => (parseOH(a.oh)?.start??Infinity) - (parseOH(b.oh)?.start??Infinity)))
-    return d
+    // Sort day keys chronologically by extracting month + day number
+    const monthOrder = ['January','February','March','April','May','June','July','August','September','October','November','December']
+    const dayVal = k => {
+      const m = k.match(/([A-Za-z]+)\s+(\d+)/)
+      if (!m) return 9999
+      return monthOrder.indexOf(m[1]) * 100 + parseInt(m[2])
+    }
+    return Object.fromEntries(Object.entries(d).sort((a,b) => dayVal(a[0]) - dayVal(b[0])))
   })()
 
   const cmpH = cmpIds.map(id => homes.find(h => h.id === id)).filter(Boolean)
